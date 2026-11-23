@@ -1,0 +1,6 @@
+{
+  "name": "Path Tracker",
+  "description": "Personal GPS travel tracking application to record live journeys, visualize routes on interactive maps, replay trips, and analyze travel statistics.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
