@@ -28,6 +28,7 @@ import type {
   TravelActivity,
 } from '../types/journey';
 import {ACTIVITY_META, formatCoordinates, formatDuration} from '../utils/format';
+import {LeafletRouteMap} from './LeafletRouteMap';
 
 export interface MapRouteSeries {
   id: string;
@@ -764,13 +765,7 @@ export const InteractiveRouteMap: React.FC<InteractiveRouteMapProps> = ({
     return DEFAULT_CENTER;
   }, [routes, livePosition]);
 
-  const useOfflineFallback = !isOnline || !hasApiKey || quotaExceeded;
-
-  const fallbackReason = !isOnline
-    ? 'Offline vector map active — GPS recording continues locally'
-    : quotaExceeded
-      ? 'Vector route view active (Maps API quota reached)'
-      : 'Local vector route view (configure Google Maps API key for tiles)';
+  const useGoogleMaps = Boolean(hasApiKey && !quotaExceeded && isOnline);
 
   return (
     <div
@@ -778,15 +773,7 @@ export const InteractiveRouteMap: React.FC<InteractiveRouteMapProps> = ({
       data-map-layer={mapLayer}
       className={`relative w-full overflow-hidden rounded-xl border border-[#E5E8EE] bg-[#F1F5F9] ${heightClass}`}
     >
-      {useOfflineFallback ? (
-        <OfflineVectorCanvas
-          routes={routes}
-          livePosition={livePosition}
-          replayPosition={replayPosition}
-          showStops={showStops}
-          reason={fallbackReason}
-        />
-      ) : (
+      {useGoogleMaps ? (
         <GoogleInteractiveMapInner
           routes={routes}
           livePosition={livePosition}
@@ -801,6 +788,28 @@ export const InteractiveRouteMap: React.FC<InteractiveRouteMapProps> = ({
           mapLayer={mapLayer}
           setMapLayer={setMapLayer}
           initialCenter={initialCenter}
+        />
+      ) : isOnline ? (
+        <LeafletRouteMap
+          routes={routes}
+          livePosition={livePosition}
+          liveAccuracyMeters={liveAccuracyMeters}
+          liveHeading={liveHeading}
+          replayPosition={replayPosition}
+          replayHeading={replayHeading}
+          autoFollow={autoFollow}
+          onAutoFollowChange={onAutoFollowChange}
+          showStops={showStops}
+          onSelectRoute={onSelectRoute}
+          initialCenter={initialCenter}
+        />
+      ) : (
+        <OfflineVectorCanvas
+          routes={routes}
+          livePosition={livePosition}
+          replayPosition={replayPosition}
+          showStops={showStops}
+          reason="Offline vector map active — GPS recording continues locally"
         />
       )}
     </div>
