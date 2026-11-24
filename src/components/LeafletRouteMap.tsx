@@ -68,10 +68,12 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
   const liveAccuracyCircleRef = useRef<L.Circle | null>(null);
   const replayMarkerRef = useRef<L.Marker | null>(null);
   const deviceMarkerRef = useRef<L.Marker | null>(null);
+  const deviceCircleRef = useRef<L.Circle | null>(null);
 
   const [mapLayer, setMapLayer] = useState<MapLayerType>('roadmap');
   const [showLayerMenu, setShowLayerMenu] = useState(false);
   const [deviceLocation, setDeviceLocation] = useState<LatLngPoint | null>(null);
+  const [deviceAccuracy, setDeviceAccuracy] = useState<number | null>(null);
   const [locating, setLocating] = useState(false);
 
   // Initialize Leaflet map
@@ -121,14 +123,30 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
             lng: pos.coords.longitude,
           };
           setDeviceLocation(coords);
+          setDeviceAccuracy(pos.coords.accuracy || null);
           if (routes.length === 0 && !livePosition) {
             map.setView([coords.lat, coords.lng], 15);
           }
         },
         () => {
-          // Non-blocking fallback
+          // If high accuracy times out (common on PCs), fallback to Wi-Fi/IP location
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const coords: LatLngPoint = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+              };
+              setDeviceLocation(coords);
+              setDeviceAccuracy(pos.coords.accuracy || null);
+              if (routes.length === 0 && !livePosition) {
+                map.setView([coords.lat, coords.lng], 15);
+              }
+            },
+            () => {},
+            {enableHighAccuracy: false, timeout: 20000, maximumAge: 60000}
+          );
         },
-        {enableHighAccuracy: true, timeout: 8000}
+        {enableHighAccuracy: true, timeout: 6000, maximumAge: 30000}
       );
     }
 
@@ -194,38 +212,45 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
     }
   }, [routes.length]);
 
-  // Manual Locate Me handler
+  // Resilient Locate Me handler with fallback for PCs/laptops without satellite GPS
   const handleLocateMe = useCallback(() => {
     if (!('geolocation' in navigator)) {
-      alert('Geolocation is not supported by your browser.');
       return;
     }
     setLocating(true);
+
+    const onSuccess = (pos: GeolocationPosition) => {
+      setLocating(false);
+      const coords: LatLngPoint = {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+      };
+      setDeviceLocation(coords);
+      setDeviceAccuracy(pos.coords.accuracy || null);
+      if (mapRef.current) {
+        mapRef.current.setView([coords.lat, coords.lng], 16, {animate: true});
+      }
+    };
+
+    // Try high accuracy first (e.g. on mobile GPS), then fallback to standard Wi-Fi/IP location
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLocating(false);
-        const coords: LatLngPoint = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-        };
-        setDeviceLocation(coords);
-        if (mapRef.current) {
-          mapRef.current.setView([coords.lat, coords.lng], 16, {animate: true});
-        }
+      onSuccess,
+      () => {
+        // Fallback for laptops/desktops where high-accuracy GPS hardware times out
+        navigator.geolocation.getCurrentPosition(
+          onSuccess,
+          (err) => {
+            setLocating(false);
+            console.warn('Geolocation fallback result:', err.message);
+          },
+          {enableHighAccuracy: false, timeout: 20000, maximumAge: 60000}
+        );
       },
-      (err) => {
-        setLocating(false);
-        if (err.code === 1) {
-          alert('Location permission was denied. Please allow location permissions in your browser address bar.');
-        } else {
-          alert('Unable to retrieve location: ' + err.message);
-        }
-      },
-      {enableHighAccuracy: true, timeout: 10000}
+      {enableHighAccuracy: true, timeout: 7000, maximumAge: 15000}
     );
   }, []);
 
-  // Device Location Marker (standby location before recording)
+  // Device Location Marker & Accuracy Zone
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -235,29 +260,64 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
         map.removeLayer(deviceMarkerRef.current);
         deviceMarkerRef.current = null;
       }
+      if (deviceCircleRef.current) {
+        map.removeLayer(deviceCircleRef.current);
+        deviceCircleRef.current = null;
+      }
       return;
     }
 
     const pos: L.LatLngTuple = [deviceLocation.lat, deviceLocation.lng];
+
     if (!deviceMarkerRef.current) {
       const icon = L.divIcon({
         className: 'custom-device-marker',
         html: `
-          <div style="position: relative; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;">
-            <div style="position: absolute; width: 22px; height: 22px; border-radius: 50%; background-color: rgba(59, 130, 246, 0.4); animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
-            <div style="position: relative; width: 14px; height: 14px; border-radius: 50%; background-color: #2563EB; border: 2.5px solid #FFFFFF; box-shadow: 0 2px 6px rgba(0,0,0,0.35);"></div>
+          <div style="position: relative; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; cursor: grab;">
+            <div style="position: absolute; width: 24px; height: 24px; border-radius: 50%; background-color: rgba(59, 130, 246, 0.35); animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+            <div style="position: relative; width: 14px; height: 14px; border-radius: 50%; background-color: #2563EB; border: 2.5px solid #FFFFFF; box-shadow: 0 2px 6px rgba(0,0,0,0.4);"></div>
           </div>
         `,
-        iconSize: [22, 22],
-        iconAnchor: [11, 11],
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
       });
-      const marker = L.marker(pos, {icon, zIndexOffset: 1000}).addTo(map);
-      marker.bindPopup('<strong>Your Current Location</strong>');
+      const marker = L.marker(pos, {icon, zIndexOffset: 1000, draggable: true}).addTo(map);
+      marker.bindPopup(`
+        <div style="font-family: inherit; font-size: 13px; line-height: 1.4;">
+          <strong style="color: #0F172A; display: block;">📍 Your Current Location</strong>
+          <span style="color: #64748B; font-size: 11px;">${deviceAccuracy ? `Accuracy: ±${Math.round(deviceAccuracy)}m` : 'Estimated via Wi-Fi/Network'}</span>
+          <div style="color: #2563EB; font-size: 11px; margin-top: 4px; font-weight: 500;">Tip: Drag pin to adjust exact spot</div>
+        </div>
+      `);
+      marker.on('dragend', (e) => {
+        const newLatLng = (e.target as L.Marker).getLatLng();
+        setDeviceLocation({lat: newLatLng.lat, lng: newLatLng.lng});
+      });
       deviceMarkerRef.current = marker;
     } else {
       deviceMarkerRef.current.setLatLng(pos);
     }
-  }, [deviceLocation, livePosition]);
+
+    // Accuracy uncertainty circle around estimate
+    if (deviceAccuracy && deviceAccuracy > 15) {
+      if (!deviceCircleRef.current) {
+        deviceCircleRef.current = L.circle(pos, {
+          radius: deviceAccuracy,
+          color: '#2563EB',
+          weight: 1,
+          opacity: 0.45,
+          fillColor: '#3B82F6',
+          fillOpacity: 0.1,
+        }).addTo(map);
+      } else {
+        deviceCircleRef.current.setLatLng(pos);
+        deviceCircleRef.current.setRadius(deviceAccuracy);
+      }
+    } else if (deviceCircleRef.current) {
+      map.removeLayer(deviceCircleRef.current);
+      deviceCircleRef.current = null;
+    }
+  }, [deviceLocation, deviceAccuracy, livePosition]);
 
   // Draw Routes, Start/End Markers, and Stops
   useEffect(() => {
