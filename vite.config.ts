@@ -14,6 +14,7 @@ export default defineConfig(({mode}) => {
     '';
 
   return {
+    base: './',
     define: mapsApiKey
       ? {
           'import.meta.env.VITE_GOOGLE_MAPS_API_KEY': JSON.stringify(mapsApiKey),
