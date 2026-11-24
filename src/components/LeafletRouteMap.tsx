@@ -7,6 +7,7 @@ import {
   Layers,
   Maximize2,
   Minus,
+  Navigation,
   Plus,
   RotateCw,
 } from 'lucide-react';
@@ -66,9 +67,12 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
   const liveMarkerRef = useRef<L.Marker | null>(null);
   const liveAccuracyCircleRef = useRef<L.Circle | null>(null);
   const replayMarkerRef = useRef<L.Marker | null>(null);
+  const deviceMarkerRef = useRef<L.Marker | null>(null);
 
   const [mapLayer, setMapLayer] = useState<MapLayerType>('roadmap');
   const [showLayerMenu, setShowLayerMenu] = useState(false);
+  const [deviceLocation, setDeviceLocation] = useState<LatLngPoint | null>(null);
+  const [locating, setLocating] = useState(false);
 
   // Initialize Leaflet map
   useEffect(() => {
@@ -106,6 +110,26 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
     });
     if (containerRef.current) {
       resizeObserver.observe(containerRef.current);
+    }
+
+    // Auto-detect user current location if no routes exist yet
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const coords: LatLngPoint = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          };
+          setDeviceLocation(coords);
+          if (routes.length === 0 && !livePosition) {
+            map.setView([coords.lat, coords.lng], 15);
+          }
+        },
+        () => {
+          // Non-blocking fallback
+        },
+        {enableHighAccuracy: true, timeout: 8000}
+      );
     }
 
     return () => {
@@ -147,7 +171,10 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
 
     if (livePosition) {
       allLatLngs.push([livePosition.lat, livePosition.lng]);
+    } else if (deviceLocation) {
+      allLatLngs.push([deviceLocation.lat, deviceLocation.lng]);
     }
+
     if (replayPosition) {
       allLatLngs.push([replayPosition.lat, replayPosition.lng]);
     }
@@ -158,12 +185,79 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
     } else if (allLatLngs.length === 1) {
       map.setView(allLatLngs[0], 15);
     }
-  }, [routes, livePosition, replayPosition]);
+  }, [routes, livePosition, deviceLocation, replayPosition]);
 
   // Fit bounds on first route load
   useEffect(() => {
-    fitBounds();
+    if (routes.length > 0) {
+      fitBounds();
+    }
   }, [routes.length]);
+
+  // Manual Locate Me handler
+  const handleLocateMe = useCallback(() => {
+    if (!('geolocation' in navigator)) {
+      alert('Geolocation is not supported by your browser.');
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        const coords: LatLngPoint = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        };
+        setDeviceLocation(coords);
+        if (mapRef.current) {
+          mapRef.current.setView([coords.lat, coords.lng], 16, {animate: true});
+        }
+      },
+      (err) => {
+        setLocating(false);
+        if (err.code === 1) {
+          alert('Location permission was denied. Please allow location permissions in your browser address bar.');
+        } else {
+          alert('Unable to retrieve location: ' + err.message);
+        }
+      },
+      {enableHighAccuracy: true, timeout: 10000}
+    );
+  }, []);
+
+  // Device Location Marker (standby location before recording)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (!deviceLocation || livePosition) {
+      if (deviceMarkerRef.current) {
+        map.removeLayer(deviceMarkerRef.current);
+        deviceMarkerRef.current = null;
+      }
+      return;
+    }
+
+    const pos: L.LatLngTuple = [deviceLocation.lat, deviceLocation.lng];
+    if (!deviceMarkerRef.current) {
+      const icon = L.divIcon({
+        className: 'custom-device-marker',
+        html: `
+          <div style="position: relative; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;">
+            <div style="position: absolute; width: 22px; height: 22px; border-radius: 50%; background-color: rgba(59, 130, 246, 0.4); animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+            <div style="position: relative; width: 14px; height: 14px; border-radius: 50%; background-color: #2563EB; border: 2.5px solid #FFFFFF; box-shadow: 0 2px 6px rgba(0,0,0,0.35);"></div>
+          </div>
+        `,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      });
+      const marker = L.marker(pos, {icon, zIndexOffset: 1000}).addTo(map);
+      marker.bindPopup('<strong>Your Current Location</strong>');
+      deviceMarkerRef.current = marker;
+    } else {
+      deviceMarkerRef.current.setLatLng(pos);
+    }
+  }, [deviceLocation, livePosition]);
 
   // Draw Routes, Start/End Markers, and Stops
   useEffect(() => {
@@ -250,7 +344,7 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
     });
   }, [routes, showStops, onSelectRoute, livePosition]);
 
-  // Live Position Marker & Accuracy Circle
+  // Live Position Marker & Accuracy Circle (during active recording)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -418,25 +512,25 @@ export const LeafletRouteMap: React.FC<LeafletRouteMapProps> = ({
         >
           <Maximize2 className="h-4 w-4" />
         </button>
-        {livePosition && (
-          <button
-            type="button"
-            onClick={() => {
+        <button
+          type="button"
+          onClick={() => {
+            if (livePosition) {
               if (onAutoFollowChange) onAutoFollowChange(!autoFollow);
-              if (mapRef.current && livePosition) {
-                mapRef.current.panTo([livePosition.lat, livePosition.lng]);
-              }
-            }}
-            className={`flex h-8 w-8 items-center justify-center rounded-lg border shadow-sm transition ${
-              autoFollow
-                ? 'border-blue-600 bg-blue-600 text-white'
-                : 'border-[#CBD5E1] bg-white text-slate-700 hover:bg-slate-50'
-            }`}
-            title={autoFollow ? 'Disable Auto-follow' : 'Follow My Location'}
-          >
-            <Crosshair className="h-4 w-4" />
-          </button>
-        )}
+              mapRef.current?.panTo([livePosition.lat, livePosition.lng]);
+            } else {
+              handleLocateMe();
+            }
+          }}
+          className={`flex h-8 w-8 items-center justify-center rounded-lg border shadow-sm transition ${
+            autoFollow || locating
+              ? 'border-blue-600 bg-blue-600 text-white'
+              : 'border-[#CBD5E1] bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+          title="Locate My Position / Center Map"
+        >
+          <Crosshair className={`h-4 w-4 ${locating ? 'animate-spin' : ''}`} />
+        </button>
       </div>
     </div>
   );
